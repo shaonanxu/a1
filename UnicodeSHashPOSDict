@@ -1,0 +1,537 @@
+package com.baijiahulian.antispam.dict;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * 扩展UnicodeSHashDict 
+ * 	增加spam属性
+ * 
+ * @author xushaonan
+ *
+ */
+public class UnicodeSHashPOSDict {
+
+	private final static int SIZE = 65535;
+	private final static int[] EMPTY = new int[0];
+	
+	public enum POS {
+		QQ((byte)0x1), MOBILE((byte)0x2), WORD((byte)0x3);
+		public byte v;
+		POS(byte v){
+			this.v = v;
+		}
+	}
+	
+	/**
+	 * @param terms 	词表
+	 * @param mmatch	是否是最大匹配 true: 正向最大匹配
+	 */
+	public static UnicodeSHashPOSDict load(List<String> terms, List<POS> poss, boolean mmatch, boolean reverse){
+		UnicodeSHashPOSDict dict = new UnicodeSHashPOSDict(mmatch);
+		if(reverse){
+			for(int i=0;i<terms.size();i ++){
+				dict.reverseAddTerm(terms.get(i), poss.get(i));
+			}
+		} else {
+			for(int i=0;i<terms.size();i ++){
+				dict.addTerm(terms.get(i), poss.get(i));
+			}
+		}
+		return dict;
+	}
+	
+	private short[] indics = new short[SIZE];
+	private Terms[] termsSet;
+	private short size, initCap = 16;
+	private TermsFactory termFactory = null;
+	
+	private UnicodeSHashPOSDict(boolean mmatch){
+		for(int i=0;i<SIZE;i++){
+			indics[i] = -1;
+		}
+		termsSet = new Terms[initCap];
+		// true: 最大匹配
+		if(mmatch)
+			this.termFactory = new MaxMatchTermsFactory();
+		else 
+			this.termFactory = new MinMatchTermsFactory();
+	}
+	
+	public boolean exist(String str){
+		if(str.length() < 2) return false;
+		char[] cs = str.toCharArray();
+		int len = cs.length - 1;
+		for(int i=0;i<len;i++){
+			int c0 = cs[i];
+			int pos = this.indics[c0];
+			if(pos > -1){
+				if(this.termsSet[pos].find(cs, i+1) > -1) return true;
+			}
+		}
+		return false;
+	}
+	
+	/**
+	 * 提高同前缀词查找速度
+	 * 	eg 手机好吗
+	 * @param str
+	 * @return
+	 */
+	public int[] reverseFind(String str){
+		if(str.length() < 2) return EMPTY;
+		char[] cs = str.toCharArray();
+		List<Integer> ret = new ArrayList<>();
+		for(int i=cs.length-1;i>0;){
+			int c0 = cs[i];
+			int p = this.indics[c0];
+			if(p > -1){
+				int[] fl = this.termsSet[p].reverseFind(cs, i-1);
+				if(fl != EMPTY){
+					int v1 = fl[0];
+					int v2 = fl[1];
+					ret.add(i-v1+1);
+					ret.add(v1);
+					ret.add(v2);
+					i-=v2;
+					continue;
+				}
+			}
+			i--;
+		}
+		return toArray(ret);
+	}
+	
+	public int[] find(String str){
+		if(str.length() < 2) return EMPTY;
+		char[] cs = str.toCharArray();
+		int len = cs.length - 1;
+		List<Integer> ret = new ArrayList<>();
+		for(int i=0;i<len;){
+			int c0 = cs[i];
+			int pos = this.indics[c0];
+			if(pos > -1){
+				int fl = this.termsSet[pos].find(cs, i+1);
+				if(fl > -1){
+					ret.add(i);
+					ret.add(fl);
+					i+=fl;
+					continue;
+				}
+			}
+			i++;
+		}
+		return toArray(ret);
+	}
+	
+	
+	private boolean addTerm(String term, POS pos){
+		if(term == null || term.length() == 0) return false;
+		char[] cs = term.toCharArray();
+		int c0 = cs[0];
+		char[] csN = new char[cs.length - 1];
+		System.arraycopy(cs, 1, csN, 0, csN.length);
+		
+		int v = indics[c0];
+		if(v == -1){
+			ensureCapacity();
+			Terms terms = this.termFactory.newTerms(csN, pos);
+			indics[c0] = this.size;
+			termsSet[this.size] = terms;
+			this.size ++;
+		} else {
+			termsSet[v].addTerm(csN, pos);
+		}
+		return true;
+	}
+	
+	private boolean reverseAddTerm(String term, POS pos){
+		if(term == null || term.length() == 0) return false;
+		char[] cs = term.toCharArray();
+		int c0 = cs[cs.length-1];
+		char[] csN = new char[cs.length-1];
+		for(int i=0,j=cs.length-2;i<csN.length;i++){
+			csN[i] = cs[j--];
+		}
+		int v = indics[c0];
+		if(v == -1){
+			ensureCapacity();
+			Terms terms = this.termFactory.newTerms(csN, pos);
+			indics[c0] = this.size;
+			termsSet[this.size] = terms;
+			this.size ++;
+		} else {
+			termsSet[v].addTerm(csN, pos);
+		}
+		return true;
+		
+	}
+	
+	
+	private void ensureCapacity(){
+		if(size == termsSet.length){
+			Terms[] newTermsSet = new Terms[size + this.initCap];
+			System.arraycopy(termsSet, 0, newTermsSet, 0, size);
+			this.termsSet = newTermsSet;
+		}
+	}
+	
+	class MaxMatchTerms extends Terms{
+		public MaxMatchTerms(char[] cs, POS pos) {
+			super(cs, pos);
+		}
+
+		@Override
+		void addTerm(char[] cs, POS pos) {
+			char c = cs[0];
+			int point = 0;
+			while(c < this.indics[point] && ++point<size){}
+			if(point == size)
+				addTail(cs, c, pos);
+			else
+				addTerm0(cs, point, c, pos);
+		}
+		
+		protected void addTerm0(char[] cs, int p, char c0, POS pos){
+			int r = 0;
+			for(int i=p;i<super.size;i++){
+				r = compare0(terms[i], cs);
+				if(r == 0) return;
+				else if(r > 0){
+					move(i);
+					this.indics[i] = c0;
+					this.tpos[i] = pos.v;
+					this.terms[i] = cs;
+					return;
+				}
+			}
+			if(r < 0) this.addTail(cs, c0, pos);
+		}
+		
+		@Override
+		int find(char[] cs, int pos){
+			char c0 = cs[pos];
+			int pt = findDescIndics(c0);
+			if(pt == -1) return -1;
+			return findTerms(pt, cs, pos);
+		}
+
+		int findTerms(int pt, char[] cs, int pos) {
+			for(;pt<super.size;pt++){
+				char[] src = this.terms[pt];
+				int r = this.compare(src, cs, pos);
+				if(r == 0) return src.length + 1;		// ＋1 首字母
+				if(r > 0) break;
+			}
+			return 0;
+		}
+
+		@Override
+		int[] reverseFind(char[] cs, int p) {
+			char c0 = cs[p];
+			int pt = findDescIndics(c0);
+			if(pt == -1) return EMPTY;
+			for(;pt<super.size;pt++){
+				char[] src = this.terms[pt];
+				int r = super.reverseCompare(src, cs, p);
+				if(r == 0) return new int[]{src.length+1, this.tpos[pt]};		// ＋1 首字母
+				if(r > 0) break;
+			}
+			return EMPTY;
+		}
+		
+	}
+	
+	/**
+	 * 最小匹配
+	 * 
+	 * src : a b c d
+	 * dest: a b c
+	 * 
+	 * dest < src
+	 * 
+	 * @author xushaonan
+	 *
+	 */
+	class MinMatchTerms extends Terms{
+		public MinMatchTerms(char[] cs, POS pos) {
+			super(cs, pos);
+		}
+		
+		@Override
+		void addTerm(char[] cs, POS pos) {
+			char c = cs[0];
+			int point = 0;
+			while(c > this.indics[point] && ++point<size){}
+			if(point == size)
+				addTail(cs, c, pos);
+			else
+				addTerm0(cs, point, c, pos);
+		}
+		
+		protected void addTerm0(char[] cs, int p, char c0, POS pos){
+			int r = 0;
+			for(int i=p;i<super.size;i++){
+				r = compare0(terms[i], cs);
+				if(r == 0) return;  // same term, not add
+				else if(r < 0){
+					move(i);
+					this.indics[i] = c0;
+					this.tpos[i] = pos.v;
+					this.terms[i] = cs;
+					return;
+				}
+			}
+			if(r > 0) this.addTail(cs, c0, pos);
+		}
+
+		@Override
+		int find(char[] cs, int p){
+			char c0 = cs[p];
+			int pt = findAseIndics(c0);
+			if(pt == -1) return -1;
+			return findTerms(pt, cs, p);
+		}
+
+		int findTerms(int pt, char[] cs, int pos) {
+			for(;pt<super.size;pt++){
+				char[] src = this.terms[pt];
+				int r = super.compare(src, cs, pos);
+				if(r == 0) return src.length + 1;		// ＋1 首字母
+				if(r < 0) break;
+			}
+			return -1;
+		}
+
+		@Override
+		int[] reverseFind(char[] cs, int p) {
+			char c0 = cs[p];
+			int pt = findAseIndics(c0);
+			if(pt == -1) return EMPTY;
+			for(;pt<super.size;pt++){
+				char[] src = this.terms[pt];
+				int r = super.reverseCompare(src, cs, p);
+				if(r == 0) return new int[]{src.length+1, this.tpos[pt]};		// ＋1 首字母
+				if(r < 0) break;
+			}
+			return EMPTY;
+		}
+	}
+
+	abstract class Terms {
+		char[] indics = new char[initCap];
+		byte[] tpos = new byte[initCap];
+		char[][] terms = new char[initCap][];
+		int size;
+		
+		public Terms(char[] cs, POS pos){
+			indics[0] = cs[0];
+			tpos[0] = pos.v;
+			terms[0] = cs;
+			size=1;
+		}
+		
+		abstract void addTerm(char[] cs, POS pos);
+		abstract int find(char[] cs, int p);
+		/**		  
+		 * @return int[]{spam term length, spam POS}
+		 */
+		abstract int[] reverseFind(char[] cs, int p);
+		
+		protected int compare(char[] src, char[] dest, int dpos){
+			int slen = src.length;
+			int dlen = dest.length-dpos;
+			int i=0,j=dpos,len=Math.min(slen, dlen);
+			char s,d;
+			do{
+				s=src[i];
+				d=dest[j++];
+			} while(s==d&&++i<len);
+			if(i == slen) return 0;
+			return d-s;
+		}
+		
+		protected int reverseCompare(char[] src, char[] dest, int dpos){
+			int slen = src.length;
+			int i=0, j=dpos, len=Math.min(slen, dpos+1);
+			char s,d;
+			do{
+				s=src[i];
+				d=dest[j];
+			} while(s==d&&++i<len&&--j>=0);	// fix bug 0407
+			if(i==slen) return 0;
+			if(j<0) return -1;
+			return d-s;
+		}
+		
+		
+		protected int findAseIndics(char c){
+			int pos = -1;
+			if(size < 7){
+				for(int i=0;i<size;i++){
+					if(c == indics[i]){
+						pos=i;
+						break;
+					}
+				}
+			} else {
+				int lo=0, hi=size-1;
+				while(hi >= lo){
+					int mi = lo + (hi - lo) / 2;
+					char e = indics[mi];
+					if(c > e){
+						lo = mi + 1;
+					} else if(c < e){
+						hi = mi - 1;
+					} else {
+						while(--mi>=0 && c == indics[mi]){}
+						pos = mi+1;
+						break;
+					}
+				}
+			}
+			return pos;
+		}
+		
+		protected int findDescIndics(char c){
+			int pos = -1;
+			if(size < 7){
+				for(int i=0;i<size;i++){
+					if(c == indics[i]){
+						pos=i;
+						break;
+					}
+				}
+			} else {
+				int lo=0, hi=size-1;
+				while(hi >= lo){
+					int mi = lo + (hi - lo) / 2;
+					char e = indics[mi];
+					if(c < e){
+						lo = mi + 1;
+					} else if(c > e){
+						hi = mi - 1;
+					} else {
+						while(--mi>=0 && c == indics[mi]){}
+						pos = mi+1;
+						break;
+					}
+				}
+			}
+			return pos;
+		}
+		
+		protected void move(int pos){
+			if(size + 1 == terms.length){
+				char[][] nTerms = new char[size+2][];
+				System.arraycopy(this.terms, 0, nTerms, 0, pos);
+				System.arraycopy(this.terms, pos, nTerms, pos+1, size-pos);
+				this.terms = nTerms;
+				char[] nIndics = new char[size+2];
+				System.arraycopy(this.indics, 0, nIndics, 0, pos);
+				System.arraycopy(this.indics, pos, nIndics, pos+1, size-pos);
+				this.indics = nIndics;
+				byte[] nTpos = new byte[size+2];
+				System.arraycopy(this.tpos, 0, nTpos, 0, pos);
+				System.arraycopy(this.tpos, pos, nTpos, pos+1, size-pos);
+				this.tpos = nTpos;
+			} else {
+				for(int i=size;i>=pos;i--){
+					indics[i+1]=indics[i];
+					tpos[i+1]=tpos[i];
+					terms[i+1]=terms[i];
+				}
+			}
+			size++;
+		}
+		
+		protected void addTail(char[] cs, char c, POS pos){
+			if(this.size + 1 == this.terms.length){
+				char[] nIndics = new char[size+2];
+				System.arraycopy(indics, 0, nIndics, 0, size);
+				this.indics = nIndics;
+				
+				byte[] nTpos = new byte[size+2];
+				System.arraycopy(tpos, 0, nTpos, 0, size);
+				this.tpos = nTpos;
+				
+				char[][] nTerms = new char[this.size + 2][];
+				System.arraycopy(terms, 0, nTerms, 0, size);
+				this.terms = nTerms;
+			}
+			this.indics[size] = c;
+			this.tpos[size] = pos.v;
+			this.terms[size] = cs;
+			size++;
+		}
+	}
+	
+	/**
+	 * src : a b c d
+	 * dest: a b c d
+	 * return 0;
+	 * 
+	 * src : a b c d
+	 * dest: a b c
+	 * return 3-4
+	 * 
+	 * src : a b c d
+	 * dest: a b d e
+	 * return d-c
+	 * 
+	 */
+	private int compare0(char[] src, char[] dest){
+		int slen = src.length;
+		int dlen = dest.length;
+		int i=0, len = Math.min(slen, dlen);
+		char c1,c2;
+		do{
+			c1=src[i];
+			c2=dest[i];
+		} while(c1==c2&&++i<len);
+
+		if(i == len){
+			return dlen - slen;
+		} else {
+			return c2 - c1;
+		}
+	}
+	
+	private int[] toArray(List<Integer> ret){
+		int[] r = new int[ret.size()];
+		for(int i=0;i<ret.size();i++){
+			r[i] = ret.get(i);
+		}
+		return r;
+	}
+	
+	interface TermsFactory{
+		Terms newTerms(char[] cs, POS pos);
+	}
+	
+	class MaxMatchTermsFactory implements TermsFactory{
+		@Override
+		public Terms newTerms(char[] cs, POS pos) {
+			return new MaxMatchTerms(cs, pos);
+		}
+		
+	}
+	class MinMatchTermsFactory implements TermsFactory{
+		@Override
+		public Terms newTerms(char[] cs, POS pos) {
+			return new MinMatchTerms(cs, pos);
+		}
+	}
+
+	public static String posToDetail(int i) {
+		switch(i){
+		case 1:
+			return POS.QQ.name();
+		case 2:
+			return POS.MOBILE.name();
+		case 3:
+			return POS.WORD.name();
+		}
+		return "UNKNOW";
+	}
+}
